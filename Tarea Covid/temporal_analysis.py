@@ -34,15 +34,18 @@ class CovidTemporalAnalysis:
 
     # PASO 2
     def build_monthly_aggregation(self):
-        self.df['Mes'] = self.df['Fecha'].dt.to_period('M').dt.to_timestamp()
+        # Agregar mensual usando resample('MS') por país
         self.mensual = (
-            self.df.groupby(['Pais', 'Mes'], as_index=False)['Casos Diarios']
-                .sum()
-                .rename(columns={'Casos Diarios': 'Casos Mensuales'})
+            self.df.set_index('Fecha')
+                   .groupby('Pais')['Casos Diarios']
+                   .resample('MS')
+                   .sum()
+                   .reset_index()
+                   .rename(columns={'Fecha': 'Mes', 'Casos Diarios': 'Casos Mensuales'})
         )
 
         print("\n")
-        print("PASO 2: Agregar columna de Mes (primer día del mes) y agrupar por País y Mes")
+        print("PASO 2: Agregar mensual por país usando resample('MS') (inicio de mes)")
         print("\nResumen mensual por país (muestra):")
         print(self.mensual.head(12))
         # Guardar
@@ -183,18 +186,19 @@ class CovidTemporalAnalysis:
 
     # PASO 8
     def export_el_salvador_2020(self):
-        print("\nPASO 8: Comportamiento de casos en El Salvador durante 2020 (agregado mensual)")
+        print("\nPASO 8: Comportamiento de casos en El Salvador durante 2020 (resample mensual)")
         if self.df is None:
             raise ValueError("DataFrame no cargado. Ejecuta load_and_parse_dates() primero.")
         df_es = self.df[(self.df['Pais'] == self.pais_especifico) & (self.df['Fecha'].dt.year == 2020)].copy()
         if df_es.empty:
             print("No se encontraron datos para El Salvador en 2020.")
             return
-        df_es['Mes'] = df_es['Fecha'].dt.to_period('M').dt.to_timestamp()
         mensual_es = (
-            df_es.groupby('Mes', as_index=False)['Casos Diarios']
+            df_es.set_index('Fecha')
+                 .resample('MS')['Casos Diarios']
                  .sum()
-                 .rename(columns={'Casos Diarios': 'Casos Mensuales'})
+                 .reset_index()
+                 .rename(columns={'Fecha': 'Mes', 'Casos Diarios': 'Casos Mensuales'})
         )
         os.makedirs('analisis', exist_ok=True)
         ruta = 'analisis/el_salvador_2020.csv'
@@ -203,7 +207,7 @@ class CovidTemporalAnalysis:
 
     # PASO 9
     def export_comparison_el_salvador_vs(self, otros: list[str] | None = None):
-        print("\nPASO 9: Comparación de El Salvador con otros 2 países (agregado mensual por año-mes)")
+        print("\nPASO 9: Comparación de El Salvador con otros 2 países (resample mensual por año-mes) - Solo 2020")
         if self.df is None:
             raise ValueError("DataFrame no cargado. Ejecuta load_and_parse_dates() primero.")
         # Elegir países por defecto
@@ -218,15 +222,19 @@ class CovidTemporalAnalysis:
             otros = preferidos[:2]
         seleccionados = [self.pais_especifico] + (otros or [])
         tmp = self.df[self.df['Pais'].isin(seleccionados)].copy()
-        tmp['Anio'] = tmp['Fecha'].dt.year
-        tmp['MesNum'] = tmp['Fecha'].dt.month
-        tmp['Mes'] = tmp['Fecha'].dt.to_period('M').dt.to_timestamp()
+        # Limitar al año 2020
+        tmp = tmp[tmp['Fecha'].dt.year == 2020]
         comp = (
-            tmp.groupby(['Pais', 'Anio', 'MesNum', 'Mes'], as_index=False)['Casos Diarios']
+            tmp.set_index('Fecha')
+               .groupby('Pais')['Casos Diarios']
+               .resample('MS')
                .sum()
-               .rename(columns={'Casos Diarios': 'Casos Mensuales'})
-               .sort_values(['Pais', 'Anio', 'MesNum'])
+               .reset_index()
+               .rename(columns={'Fecha': 'Mes', 'Casos Diarios': 'Casos Mensuales'})
         )
+        comp['Anio'] = comp['Mes'].dt.year
+        comp['MesNum'] = comp['Mes'].dt.month
+        comp = comp.sort_values(['Pais', 'Anio', 'MesNum'])
         nombres = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
         comp['MesNombre'] = comp['MesNum'].map(nombres)
         os.makedirs('analisis', exist_ok=True)
@@ -234,6 +242,89 @@ class CovidTemporalAnalysis:
         comp.to_csv(ruta, index=False)
         print(f"Países comparados: {seleccionados}")
         print(f"Archivo guardado: {ruta}")
+
+    # PLOTS: Comparación El Salvador vs 2 países
+    def plot_comparison_el_salvador_vs(self, csv_path: str = 'analisis/comparacion_el_salvador_vs.csv'):
+        print("\nPLOT: Comparación El Salvador vs 2 países")
+        if not os.path.exists(csv_path):
+            print(f"No se encontró {csv_path}. Generando datos del PASO 9...")
+            self.export_comparison_el_salvador_vs()
+        dfc = pd.read_csv(csv_path, parse_dates=['Mes'])
+        fig = px.line(
+            dfc,
+            x='Mes', y='Casos Mensuales', color='Pais', markers=True,
+            title='Comparación mensual: El Salvador vs 2 países'
+        )
+        fig.update_layout(xaxis_title='Mes', yaxis_title='Casos Mensuales', hovermode='x unified')
+        os.makedirs('analisis', exist_ok=True)
+        out_html = 'analisis/comparacion_el_salvador_vs.html'
+        fig.write_html(out_html, include_plotlyjs='cdn')
+        print(f"Gráfico guardado: {out_html}")
+
+    # PLOTS: El Salvador 2020
+    def plot_el_salvador_2020(self, csv_path: str = 'analisis/el_salvador_2020.csv'):
+        print("\nPLOT: El Salvador 2020")
+        if not os.path.exists(csv_path):
+            print(f"No se encontró {csv_path}. Generando datos del PASO 8...")
+            self.export_el_salvador_2020()
+        dfe = pd.read_csv(csv_path, parse_dates=['Mes'])
+        fig = px.bar(
+            dfe,
+            x='Mes', y='Casos Mensuales',
+            title='El Salvador 2020 - Casos mensuales (resample)'
+        )
+        fig.update_layout(xaxis_title='Mes', yaxis_title='Casos Mensuales')
+        os.makedirs('analisis', exist_ok=True)
+        out_html = 'analisis/el_salvador_2020.html'
+        fig.write_html(out_html, include_plotlyjs='cdn')
+        print(f"Gráfico guardado: {out_html}")
+
+    # PLOTS: Tendencias países (incluye MM3)
+    def plot_tendencias(self, csv_path: str = None):
+        if csv_path is None:
+            csv_path = self.out_tendencias_csv
+        print("\nPLOT: Tendencias por país (Casos Mensuales y MM3)")
+        if not os.path.exists(csv_path):
+            print(f"No se encontró {csv_path}. Generando datos del PASO 4...")
+            self.select_countries_and_trends()
+        dft = pd.read_csv(csv_path, parse_dates=['Mes'])
+        # Preparar datos en formato largo para trazar Casos Mensuales y MM3
+        cols = ['Casos Mensuales'] + ([c for c in dft.columns if c == 'MM3'])
+        long = dft.melt(id_vars=['Pais', 'Mes'], value_vars=cols, var_name='Serie', value_name='Valor')
+        fig = px.line(long, x='Mes', y='Valor', color='Pais', line_dash='Serie', markers=True,
+                      title='Tendencias mensuales por país (Casos Mensuales vs MM3)')
+        fig.update_layout(xaxis_title='Mes', yaxis_title='Casos', hovermode='x unified')
+        os.makedirs('analisis', exist_ok=True)
+        out_html = 'analisis/tendencias_paises.html'
+        fig.write_html(out_html, include_plotlyjs='cdn')
+        print(f"Gráfico guardado: {out_html}")
+
+    # PLOTS: Pico máximo global (marcador)
+    def plot_global_peak(self, csv_path: str = 'analisis/pico_maximo_global.csv'):
+        print("\nPLOT: Pico máximo global (barras)")
+        if not os.path.exists(csv_path):
+            print(f"No se encontró {csv_path}. Generando datos del PASO 7...")
+            self.export_global_peak_country()
+        dfg = pd.read_csv(csv_path)
+        dfg['FechaPico'] = pd.to_datetime(dfg['FechaPico'])
+        dfg = dfg.sort_values('Casos Pico', ascending=True)
+        fig = px.bar(
+            dfg,
+            x='Casos Pico', y='Pais', orientation='h', text='Casos Pico',
+            hover_data={'FechaPico': True, 'Casos Pico': ':.2f', 'Pais': False},
+            title='Pico máximo global de casos diarios por país'
+        )
+        fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+        fig.update_layout(
+            xaxis_title='Casos en el pico',
+            yaxis_title='País',
+            xaxis_tickformat=',.2f',
+            margin=dict(l=80, r=40, t=60, b=40)
+        )
+        os.makedirs('analisis', exist_ok=True)
+        out_html = 'analisis/pico_maximo_global.html'
+        fig.write_html(out_html, include_plotlyjs='cdn')
+        print(f"Gráfico guardado: {out_html}")
 
     def run_all(self):
         self.load_and_parse_dates()
@@ -245,6 +336,11 @@ class CovidTemporalAnalysis:
         self.export_global_peak_country()
         self.export_el_salvador_2020()
         self.export_comparison_el_salvador_vs()
+        # Graficar salidas solicitadas
+        self.plot_comparison_el_salvador_vs()
+        self.plot_el_salvador_2020()
+        self.plot_tendencias()
+        self.plot_global_peak()
 
     @staticmethod
     def _save_csv(df: pd.DataFrame, path: str):
